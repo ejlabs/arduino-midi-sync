@@ -196,9 +196,9 @@ void all_off() {
 
 void sendClockPulse() {  
   
-  if (playing) {
-  
   Serial.write(MIDI_TIMING_CLOCK); // sending midi clock
+  
+  if (playing) {  
   
   blinkCount = (blinkCount + 1) % CLOCKS_PER_BEAT;
   blinkCount2 = (blinkCount2 + 1) % (CLOCKS_PER_BEAT / 2);
