@@ -1,46 +1,73 @@
+/*
+ * Arduino Midi Master Clock v0.2
+ * MIDI master clock/sync/divider for MIDI instruments, Pocket Operators and Korg Volca.
+ * by Eunjae Im https://ejlabs.net/arduino-midi-master-clock
+ *
+ * Required library
+ *    TimerOne https://playground.arduino.cc/Code/Timer1
+ *    Encoder https://www.pjrc.com/teensy/td_libs_Encoder.html
+ *    MIDI https://github.com/FortySevenEffects/arduino_midi_library
+ *    Adafruit SSD1306 https://github.com/adafruit/Adafruit_SSD1306
+ *******************************************************************************
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>
+ *******************************************************************************
+ */
+
 #include <Adafruit_SSD1306.h>
 #include <TimerOne.h>
 #include <EEPROM.h>
 #include <Encoder.h>
+#include <MIDI.h>
 
 #define OLED_RESET 4
 Adafruit_SSD1306 display(OLED_RESET);
 
-#define LED_PIN1 7
-#define SYNC_OUTPUT_PIN 6 // Audio sync digital pin
-#define SYNC_OUTPUT_PIN2 8 // 2nd audio sync pin
+#define LED_PIN1 7 // Tempo LED
+#define SYNC_OUTPUT_PIN 6 // Audio Sync Digital Pin
+#define SYNC_OUTPUT_PIN2 8 // 2nd Audio Sync Pin
+#define BUTTON_START 4 // Start/Stop Push Button
+#define BUTTON_ROTARY 5 // Rotary Encoder Button
 
-Encoder myEnc(2, 3); // rotary encoder pin 2,3
-const int button_rotary = 5; // rotary encoder button
-const int button_start = 4; // push button
-
-volatile int blinkCount = 0;
-volatile int blinkCount2 = 0;
-volatile int AudioSyncCount = 0;
-volatile int AudioSyncCount2 = 0;
-
-#define MIDI_START 0xFA
-#define MIDI_STOP 0xFC
-#define MIDI_TIMING_CLOCK 0xF8
-#define CLOCKS_PER_BEAT 24
-#define AUDIO_SYNC 12
-#define AUDIO_SYNC2 12
+#define CLOCKS_PER_BEAT 24 // MIDI Clock Ticks
+#define AUDIO_SYNC 12 // Audio Sync Ticks
+#define AUDIO_SYNC2 12 // 2nd Audio Sync Ticks
 
 #define MINIMUM_BPM 20
 #define MAXIMUM_BPM 300
 
 #define BLINK_TIME 4 // LED blink time
 
-long intervalMicroSeconds;
-int bpm;
-int audio_sync2;
+volatile int  blinkCount = 0,
+              blinkCount2 = 0,
+              AudioSyncCount = 0,
+              AudioSyncCount2 = 0;
 
-boolean playing = false;
-boolean sync_editing = false;
-boolean display_update = false;
+long intervalMicroSeconds,
+      bpm,
+      audio_sync2;
+
+boolean playing = false,
+      sync_editing = false,
+      display_update = false;
+
+Encoder myEnc(2, 3); // Rotary Encoder Pin 2,3 
+
+MIDI_CREATE_DEFAULT_INSTANCE();
 
 void setup(void) {
-  Serial.begin(31250); // MIDI output init
+  MIDI.begin(); // MIDI init
+  MIDI.turnThruOff();
 
   bpm = EEPROMReadInt(0);
   if (bpm > MAXIMUM_BPM || bpm < MINIMUM_BPM) {
@@ -55,8 +82,8 @@ void setup(void) {
   Timer1.setPeriod(60L * 1000 * 1000 / bpm / CLOCKS_PER_BEAT);
   Timer1.attachInterrupt(sendClockPulse);  
 
-  pinMode(button_start,INPUT_PULLUP);
-  pinMode(button_rotary,INPUT_PULLUP);
+  pinMode(BUTTON_START,INPUT_PULLUP);
+  pinMode(BUTTON_ROTARY,INPUT_PULLUP);
   
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.clearDisplay();
@@ -87,7 +114,6 @@ unsigned int EEPROMReadInt(int p_address)
 void bpm_display() { 
   updateBpm();
   EEPROMWriteInt(0,bpm);  
-  //display.clearDisplay();
   display.setTextSize(4);
   display.setCursor(0,0);  
   display.setTextColor(WHITE, BLACK);
@@ -121,10 +147,10 @@ void sync_display() {
 
 void startOrStop() {
   if (!playing) {
-    Serial.write(MIDI_START);
+    MIDI.sendRealTime(midi::Start);
   } else {
     all_off();
-    Serial.write(MIDI_STOP);
+    MIDI.sendRealTime(midi::Stop);
   }
   playing = !playing;
 }
@@ -135,13 +161,12 @@ void loop(void) {
   byte i = 0;
   byte p = 0;
   
-  if (digitalRead(button_start)== LOW) {
+  if (digitalRead(BUTTON_START) == LOW) {
     startOrStop();
-    delay(500);
-  }
-  if (digitalRead(button_rotary)== LOW) {
+    delay(300); // ugly but just make life easier, no need to check debounce
+  } else if (digitalRead(BUTTON_ROTARY) == LOW) {    
     p = 1;
-    delay(500);    
+    delay(200);
   }
   
   int newPosition = (myEnc.read()/4);
@@ -188,15 +213,15 @@ void loop(void) {
   }
 }
 
-void all_off() {
+void all_off() { // make sure all sync, led pin stat to low
   digitalWrite(SYNC_OUTPUT_PIN, LOW);
   digitalWrite(SYNC_OUTPUT_PIN2, LOW);
   digitalWrite(LED_PIN1, LOW);
 }
 
 void sendClockPulse() {  
-  
-  Serial.write(MIDI_TIMING_CLOCK); // sending midi clock
+
+  MIDI.sendRealTime(midi::Clock); // sending midi clock
   
   if (playing) {  
   
@@ -231,7 +256,7 @@ void sendClockPulse() {
   } // if playing
 }
 
-void updateBpm() { 
+void updateBpm() { // update BPM function (on the fly)
   long interval = 60L * 1000 * 1000 / bpm / CLOCKS_PER_BEAT;  
   Timer1.setPeriod(interval);
 }
