@@ -5,4 +5,6 @@ Support Live Effects (stutter, random trigger, pattern restart, pitch up/down) f
 
 You need to add 7 more button to master sync schematic (check out pin numbers in the code).
 
-Detail is here : https://ejlabs.net/arduino-midi-clock-effects-for-volca-sample/
+https://ejlabs.net/arduino-midi-master-clock/
+
+Video : https://ejlabs.net/arduino-midi-clock-effects-for-volca-sample/
