@@ -1,6 +1,7 @@
 /*
- * Arduino Midi Master Clock v0.2
- * MIDI master clock/sync/divider for MIDI instruments, Pocket Operators and Korg Volca.
+ * Arduino Midi Master Clock + FX v0.2
+ * MIDI master clock/sync/divider for MIDI instruments, Pocket Operators and Korg Volca
+ * and Live Effects for Volca Sample (or Drum)
  * by Eunjae Im https://ejlabs.net/arduino-midi-master-clock
  *
  * Required library
@@ -33,11 +34,30 @@
 #define OLED_RESET 4
 Adafruit_SSD1306 display(OLED_RESET);
 
-#define LED_PIN1 7 // Tempo LED
+#define LED_PIN1 13 // LED onboard (tempo)
 #define SYNC_OUTPUT_PIN 6 // Audio Sync Digital Pin
 #define SYNC_OUTPUT_PIN2 8 // 2nd Audio Sync Pin
 #define BUTTON_START 4 // Start/Stop Push Button
 #define BUTTON_ROTARY 5 // Rotary Encoder Button
+
+/* Live Effect Button */
+#define BUTTON_FX1 9  // stutter #1
+#define BUTTON_FX2 10 // stutter #2
+#define BUTTON_FX3 11 // stutter #3
+#define BUTTON_FX4 12 // random trigger
+#define BUTTON_FX5 7  // pattern restart
+#define BUTTON_FX6 2  // pitch up
+#define BUTTON_FX7 3  // pitch down
+
+// Volca Sample
+int level_cc_num = 7, pitch_cc_num = 44, channel_number = 10, default_pitch = 64;
+// Volca Drum
+//int level_cc_num = 19, pitch_cc_num = 28, channel_number = 5, default_pitch = 0;
+
+int pitch = default_pitch,
+    pitch_change_speed = 3, // pitch up/down speed value    
+    pitch_min = 1, // pitch effect min value
+    pitch_max = 125; // pitch effect max value
 
 #define CLOCKS_PER_BEAT 24 // MIDI Clock Ticks
 #define AUDIO_SYNC 12 // Audio Sync Ticks
@@ -51,15 +71,23 @@ Adafruit_SSD1306 display(OLED_RESET);
 volatile int  blinkCount = 0,
               blinkCount2 = 0,
               AudioSyncCount = 0,
-              AudioSyncCount2 = 0;
+              AudioSyncCount2 = 0,
+              fx_sync_beat = 6,
+              fx_sync_start = 0;
 
-long intervalMicroSeconds,
+long  intervalMicroSeconds,
       bpm,
       audio_sync2;
 
 boolean playing = false,
-      sync_editing = false,
-      display_update = false;
+        sync_editing = false,
+        fx1_sent = false,
+        fx2_sent = false,
+        fx1 = false,
+        fx2 = false,
+        fx3 = false,
+        fx4 = false,
+        fx5 = false;
 
 Encoder myEnc(2, 3); // Rotary Encoder Pin 2,3 
 
@@ -84,6 +112,13 @@ void setup(void) {
 
   pinMode(BUTTON_START,INPUT_PULLUP);
   pinMode(BUTTON_ROTARY,INPUT_PULLUP);
+  pinMode(BUTTON_FX1,INPUT_PULLUP);
+  pinMode(BUTTON_FX2,INPUT_PULLUP);
+  pinMode(BUTTON_FX3,INPUT_PULLUP);
+  pinMode(BUTTON_FX4,INPUT_PULLUP);
+  pinMode(BUTTON_FX5,INPUT_PULLUP);
+  pinMode(BUTTON_FX6,INPUT_PULLUP);
+  pinMode(BUTTON_FX7,INPUT_PULLUP);
   
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.clearDisplay();
@@ -120,8 +155,7 @@ void bpm_display() {
   display.print("     ");
   display.setCursor(0,0);
   display.print(bpm);
-  display.display();
-  display_update = false;
+  display.display();  
 }
 
 void sync_display() {
@@ -168,6 +202,8 @@ void loop(void) {
     p = 1;
     delay(200);
   }
+
+  effect_button(); // call effect button check
   
   int newPosition = (myEnc.read()/4);
   if (newPosition != oldPosition) {    
@@ -219,9 +255,104 @@ void all_off() { // make sure all sync, led pin stat to low
   digitalWrite(LED_PIN1, LOW);
 }
 
+void effect_button() {
+  if (digitalRead(BUTTON_FX1) == LOW) { // stutter 1
+    fx1 = true;    
+  } else if (digitalRead(BUTTON_FX2) == LOW) { // stutter 2
+    fx1 = true;
+    fx_sync_beat = 12;
+  } else if (digitalRead(BUTTON_FX3) == LOW) { // stutter 3
+    fx1 = true;
+    fx_sync_beat = 16;
+  } else if (digitalRead(BUTTON_FX4) == LOW) {  // Random trigger
+    fx2 = true;   
+  } else if (digitalRead(BUTTON_FX5) == LOW) { // restart    
+    fx3 = true;    
+  } else if (digitalRead(BUTTON_FX6) == LOW) { // pitch up
+    fx4 = true;
+  } else if (digitalRead(BUTTON_FX7) == LOW) { // pitch up
+    fx5 = true;
+  } else {
+    fx_sync_beat = 6;
+    fx1 = false;
+    fx2 = false;
+    fx3 = false;
+    fx4 = false;
+    fx5 = false;
+  }
+}
+
+void sending_fx1(int vol) { // level change effect
+  int x = 1;  
+  while (x <= channel_number)
+    {     
+      MIDI.sendControlChange(level_cc_num,vol,x);
+      x++;
+    }    
+}
+
+void sending_fx2() { // random trigger
+  int channel = random(1,channel_number + 1);
+  MIDI.sendControlChange(level_cc_num, 125, channel);
+  MIDI.sendNoteOn(60, 125, channel);
+}
+
+void pitch_fx(int value) { // pitch up/down effect
+  int x = 1;  
+  while (x <= channel_number)
+    {     
+      MIDI.sendControlChange(pitch_cc_num,value,x); // 44 = PITCH EG INT
+      x++;
+    }
+}
+
 void sendClockPulse() {  
 
   MIDI.sendRealTime(midi::Clock); // sending midi clock
+
+  fx_sync_start = (fx_sync_start + 1) % fx_sync_beat;
+  
+  if (fx_sync_start == 1 && fx1 == true && fx1_sent == false) { // stutter 1,2,3
+      sending_fx1(0);
+      fx1_sent = true;
+  } else if (fx_sync_start == 1 && fx1_sent == true) {
+      sending_fx1(125);
+      fx1_sent = false;            
+  }  
+
+  if (fx_sync_start == 0 && fx2 == true) { // random trigger
+      /*
+      if (!fx2_sent) { 
+        sending_fx1(0); // mute all channel once
+      }
+      */
+      MIDI.sendRealTime(midi::Stop);
+      sending_fx2();
+      fx2_sent = true;
+  } else if (fx_sync_start == 0 && fx2_sent == true && fx2 == false) {
+      //sending_fx1(125); // reset all channel level to 125
+      MIDI.sendRealTime(midi::Continue);
+      fx2_sent = false;
+  }
+
+  if (fx_sync_start == 0 && fx3 == true) { // pattern restart
+      MIDI.sendRealTime(midi::Start);      
+  }
+
+  if (fx4 == true) { // pitch up
+      if (pitch < pitch_max) {
+          pitch = pitch + pitch_change_speed;
+          pitch_fx(pitch);
+      }
+  } else if (fx5 == true) { // pitch down
+      if (pitch > pitch_min) {
+          pitch = pitch - pitch_change_speed;
+          pitch_fx(pitch);
+      }
+  } else if (fx4 == false && fx5 == false && pitch != default_pitch) { // pitch reset
+      pitch = default_pitch;
+      pitch_fx(pitch);
+  }
   
   if (playing) {  
   
